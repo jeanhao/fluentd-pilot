@@ -20,6 +20,7 @@ import (
 	"time"
 	"path"
 	"github.com/docker/docker/api/types/mount"
+	"os/exec"
 )
 
 /**
@@ -301,19 +302,50 @@ func (p *Pilot) newContainer(containerJSON *types.ContainerJSON) error {
 
 	// create symlink
 	p.createVolumeSymlink(containerJSON)
-
 	//pilot.findMounts(logConfigs, jsonLogPath, mounts)
 	//生成配置
 	fluentdConfig, err := p.render(id, container, logConfigs)
 	if err != nil {
 		return err
 	}
+
 	//TODO validate config before save
 	//log.Debugf("container %s fluentd config: %s", id, fluentdConfig)
 	if err = ioutil.WriteFile(p.pathOf(id), []byte(fluentdConfig), os.FileMode(0644)); err != nil {
 		return err
 	}
+
 	p.tryReload()
+
+	// TODO 添加软连接逻辑
+	// step1: 获取环境变量
+	nasPath := os.Getenv("NAS_PATH")
+	experimentId := os.Getenv("EXPERIMENT_ID")
+	DEST_LOG_NAME := "container.log"
+	if nasPath != "" && experimentId != "" { // 如果使用nas,且实验id不为空
+		log.Debugf("The nasPath is : %s", nasPath)
+		// 如果nas路径不存在（未挂载），或存在不是文件夹则返回错误
+		if stat, err := os.Stat(nasPath); err != nil || os.IsNotExist(err) || !stat.IsDir() {
+			log.Errorf("The Nas path is not exist or it's not a directory.")
+			return nil
+		}
+		// step2:执行系统命令完成ln -s操作
+		destLogPath := fmt.Sprintf("%s/%s", nasPath, id)
+		// 创建路径，如果已存在，则返回错误
+		if err := os.Mkdir(destLogPath, 0777); err != nil {
+			log.Infof("The soft link's destination %s exists", destLogPath)
+			//return nil
+		}
+		destLogFile := fmt.Sprintf("%s/%s", destLogPath, DEST_LOG_NAME)
+		log.Infof("create soft link from %s to %s", jsonLogPath, destLogFile)
+		lnCmd := exec.Command("/bin/ln", "-s", jsonLogPath, destLogFile)
+		err := lnCmd.Start()
+		if err != nil {
+			log.Error(err)
+			return nil
+		}
+	}
+
 	return nil
 }
 
